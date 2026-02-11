@@ -110,6 +110,4 @@ GitHub cron uses UTC only. To keep **08:30 Europe/London** through DST changes, 
 
 Then it gates execution by checking local London time and runs only when it's exactly `08:30` in `Europe/London`.
 
-Manual runs bypass the 08:30 gate.
-
 After the run, if `seen_jobs.json` changed, the workflow commits and pushes it back to the branch.

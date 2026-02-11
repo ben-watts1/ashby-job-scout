@@ -6,21 +6,12 @@ from dataclasses import asdict, dataclass
 import json
 import re
 from typing import Any, Iterable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 
 NEXT_DATA_PATTERN = re.compile(
     r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL
-)
-
-KNOWN_POSTING_PATHS: tuple[tuple[str, ...], ...] = (
-    ("props", "pageProps", "jobPostings"),
-    ("props", "pageProps", "jobs"),
-    ("props", "pageProps", "board", "jobPostings"),
-    ("props", "pageProps", "board", "jobs"),
-    ("props", "pageProps", "organization", "jobPostings"),
-    ("props", "pageProps", "organization", "jobs"),
 )
 
 
@@ -65,11 +56,6 @@ def fetch_jobs(company: str, ashby_url: str, timeout_seconds: int = 20) -> list[
 
 
 def _find_job_postings(payload: Any) -> list[dict[str, Any]]:
-    for path in KNOWN_POSTING_PATHS:
-        candidate = _get_path(payload, path)
-        if _is_posting_list(candidate):
-            return candidate
-
     candidates: list[list[dict[str, Any]]] = []
 
     def walk(node: Any) -> None:
@@ -78,8 +64,10 @@ def _find_job_postings(payload: Any) -> list[dict[str, Any]]:
                 walk(value)
             return
         if isinstance(node, list):
-            if _is_posting_list(node):
-                candidates.append(node)
+            if node and all(isinstance(item, dict) for item in node):
+                score = sum(_looks_like_job(item) for item in node)
+                if score:
+                    candidates.append(node)
             for value in node:
                 walk(value)
 
@@ -90,45 +78,16 @@ def _find_job_postings(payload: Any) -> list[dict[str, Any]]:
     return max(candidates, key=lambda items: sum(_looks_like_job(item) for item in items))
 
 
-def _get_path(payload: Any, path: tuple[str, ...]) -> Any:
-    node = payload
-    for key in path:
-        if not isinstance(node, dict) or key not in node:
-            return None
-        node = node[key]
-    return node
-
-
-def _is_posting_list(node: Any) -> bool:
-    if not isinstance(node, list) or not node or not all(isinstance(item, dict) for item in node):
-        return False
-    valid_count = sum(_looks_like_job(item) for item in node)
-    return valid_count >= max(1, len(node) // 2)
-
-
 def _looks_like_job(item: dict[str, Any]) -> bool:
     keys = {key.lower() for key in item.keys()}
-    has_title = any(key in keys for key in ("title", "jobtitle"))
-    has_identifier = any(key in keys for key in ("id", "jobid", "jobpostingid"))
-    raw_url = _first_text(item, ["jobUrl", "absoluteUrl", "applyUrl", "url", "jobPostingUrl", "jobPath", "path"])
-    has_job_url = _looks_like_job_url(raw_url)
-    return has_title and (has_identifier or has_job_url)
-
-
-def _looks_like_job_url(raw_url: str) -> bool:
-    if not raw_url:
-        return False
-    parsed = urlparse(raw_url)
-    path = parsed.path.lower()
-    return "/" in path and any(token in path for token in ("job", "jobs", "position", "role"))
+    has_title = any("title" in key for key in keys)
+    has_link = any(word in key for key in keys for word in ("url", "link", "path"))
+    has_identifier = any(word in key for key in keys for word in ("id", "jobid", "postingid"))
+    return has_title and (has_link or has_identifier)
 
 
 def _normalize_job(company: str, board_url: str, posting: dict[str, Any]) -> Job | None:
     title = _first_text(posting, ["title", "jobTitle", "name"]) or "Untitled role"
-    title = " ".join(title.split())
-    if len(title) > 200:
-        return None
-
     team = _first_text(posting, ["team", "department", "departmentName", "jobDepartment"]) or ""
     location = _extract_location(posting)
     raw_url = _first_text(
@@ -144,8 +103,6 @@ def _normalize_job(company: str, board_url: str, posting: dict[str, Any]) -> Job
         ],
     )
     url = urljoin(board_url.rstrip("/") + "/", raw_url) if raw_url else board_url
-    if not _looks_like_job_url(url):
-        return None
 
     raw_id = _first_text(posting, ["id", "jobId", "jobPostingId", "slug"])
     job_id = (raw_id or url).strip()
@@ -155,7 +112,7 @@ def _normalize_job(company: str, board_url: str, posting: dict[str, Any]) -> Job
     return Job(
         company=company,
         job_id=job_id,
-        title=title,
+        title=title.strip(),
         team=team.strip(),
         location=location.strip(),
         url=url.strip(),

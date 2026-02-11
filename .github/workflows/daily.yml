@@ -36,8 +36,10 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           echo "Scheduled run at 08:30 Europe/London; continuing."
           echo "run=true" >> "$GITHUB_OUTPUT"
+
 
       - name: Set up Python
         if: steps.london_gate.outputs.run == 'true'
