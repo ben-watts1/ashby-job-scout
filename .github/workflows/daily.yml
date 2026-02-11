@@ -22,21 +22,12 @@ jobs:
       - name: Ensure London 08:30 run
         id: london_gate
         run: |
-          echo "Event name: ${GITHUB_EVENT_NAME}"
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            echo "Manual run detected; bypassing London 08:30 gate."
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           now_london="$(TZ='Europe/London' date +'%H:%M')"
           echo "London time now: ${now_london}"
           if [ "${now_london}" != "08:30" ]; then
-            echo "Scheduled run outside 08:30 Europe/London; skipping execution."
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "Scheduled run at 08:30 Europe/London; continuing."
           echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
