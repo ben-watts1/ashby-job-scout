@@ -1,0 +1,56 @@
+name: Run Ashby scout now
+
+on:
+  workflow_dispatch:
+    inputs:
+      ignore_seen:
+        description: "If true, send all current matched jobs regardless of seen history"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write
+
+jobs:
+  run-now:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scout (run-now)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          IGNORE_SEEN: ${{ inputs.ignore_seen }}
+        run: |
+          if [ "${IGNORE_SEEN}" = "true" ]; then
+            echo "Running with --ignore-seen"
+            python main.py --ignore-seen
+          else
+            echo "Running without --ignore-seen"
+            python main.py
+          fi
+
+      - name: Commit seen_jobs.json update
+        if: ${{ inputs.ignore_seen != 'true' }}
+        run: |
+          if git diff --quiet -- seen_jobs.json; then
+            echo "No seen_jobs.json changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add seen_jobs.json
+          git commit -m "chore: update seen jobs state"
+          git push

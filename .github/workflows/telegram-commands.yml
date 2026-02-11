@@ -1,0 +1,48 @@
+name: Process Telegram commands
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  process-commands:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Process Telegram commands
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_WORKFLOW_TOKEN: ${{ secrets.GH_WORKFLOW_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RUN_NOW_WORKFLOW_FILE: run-now.yml
+          RUN_NOW_REF: ${{ github.ref_name }}
+        run: python process_telegram_commands.py
+
+      - name: Commit company/offset updates
+        run: |
+          if git diff --quiet -- companies.csv telegram_offset.json; then
+            echo "No companies.csv or telegram_offset.json changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add companies.csv telegram_offset.json
+          git commit -m "chore: process Telegram command updates"
+          git push

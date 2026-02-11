@@ -2,58 +2,25 @@
 
 from __future__ import annotations
 
+from typing import List
+
 import requests
 
+
 TELEGRAM_API_BASE = "https://api.telegram.org"
-
-# Telegram limit is 4096 chars; keep headroom to be safe.
-MAX_LEN = 3800
-
-
-def _chunk_text(text: str, limit: int = MAX_LEN) -> list[str]:
-    """
-    Split text into chunks <= limit, preferring to split on line boundaries.
-    """
-    lines = text.splitlines(keepends=True)
-    chunks: list[str] = []
-    buf: list[str] = []
-    size = 0
-
-    for line in lines:
-        # If a single line is huge, hard-split it
-        if len(line) > limit:
-            if buf:
-                chunks.append("".join(buf))
-                buf, size = [], 0
-            for i in range(0, len(line), limit):
-                chunks.append(line[i : i + limit])
-            continue
-
-        if size + len(line) > limit and buf:
-            chunks.append("".join(buf))
-            buf, size = [], 0
-
-        buf.append(line)
-        size += len(line)
-
-    if buf:
-        chunks.append("".join(buf))
-
-    # Never return empty list
-    return chunks or [""]
+TELEGRAM_MAX_MESSAGE_CHARS = 4096
 
 
 def send_message(bot_token: str, chat_id: str, text: str, timeout_seconds: int = 20) -> None:
+    """Send one or more Telegram messages.
+
+    Telegram messages have a hard 4096-character limit, so large digests are split
+    into multiple chunks on line boundaries where possible.
+    """
     endpoint = f"{TELEGRAM_API_BASE}/bot{bot_token}/sendMessage"
-    chat_id = str(chat_id).strip()
 
-    parts = _chunk_text(text)
-
-    for idx, part in enumerate(parts, start=1):
-        # Optional: add a small header if multiple parts
-        if len(parts) > 1:
-            part = f"(Part {idx}/{len(parts)})\n{part}"
-
+    parts = _split_message(text, TELEGRAM_MAX_MESSAGE_CHARS)
+    for part in parts:
         response = requests.post(
             endpoint,
             data={
@@ -63,8 +30,40 @@ def send_message(bot_token: str, chat_id: str, text: str, timeout_seconds: int =
             },
             timeout=timeout_seconds,
         )
-
         if not response.ok:
-            print("Telegram error response:", response.status_code, response.text)
+            body = (response.text or "")[:500]
+            raise requests.HTTPError(
+                f"Telegram sendMessage failed with HTTP {response.status_code}: {body}",
+                response=response,
+            )
 
-        response.raise_for_status()
+
+def _split_message(text: str, max_chars: int) -> List[str]:
+    if not text:
+        return [""]
+
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: List[str] = []
+    current = ""
+
+    for line in text.splitlines(keepends=True):
+        if len(line) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            for i in range(0, len(line), max_chars):
+                chunks.append(line[i : i + max_chars])
+            continue
+
+        if len(current) + len(line) > max_chars:
+            chunks.append(current)
+            current = line
+        else:
+            current += line
+
+    if current:
+        chunks.append(current)
+
+    return chunks

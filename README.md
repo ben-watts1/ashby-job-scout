@@ -26,12 +26,16 @@ A minimal Python job monitor that checks selected Ashby boards, filters by confi
 - `companies.csv` — company list and Ashby URLs.
 - `config.yml` — include/exclude/location filters.
 - `main.py` — orchestration.
+- `process_telegram_commands.py` — inbound Telegram command processing.
 - `connectors/ashby.py` — Ashby public API fetch + parse.
 - `matcher.py` — filtering logic.
-- `notify/telegram.py` — Telegram `sendMessage` integration.
+- `notify/telegram.py` — Telegram API integration.
 - `storage.py` — seen-state read/write and new-job detection.
 - `seen_jobs.json` — persisted state, committed to repo.
+- `telegram_offset.json` — update offset for Telegram command polling.
 - `.github/workflows/daily.yml` — scheduled runner and state commit.
+- `.github/workflows/telegram-commands.yml` — process bot commands and commit updates.
+- `.github/workflows/run-now.yml` — manually/externally trigger an immediate scan.
 
 ## Setup
 
@@ -50,7 +54,14 @@ export TELEGRAM_BOT_TOKEN="<your_token>"
 export TELEGRAM_CHAT_ID="<your_chat_id>"
 ```
 
-(For GitHub Actions, use repo secrets already configured.)
+For command-triggered `/runall`, also set a GitHub token with workflow dispatch permissions:
+
+```bash
+export GH_WORKFLOW_TOKEN="<github_token_with_repo_and_actions_scope>"
+export GITHUB_REPOSITORY="<owner>/<repo>"
+```
+
+(For GitHub Actions, use repo secrets.)
 
 ## Run locally
 
@@ -70,6 +81,15 @@ python main.py --dry-run
 
 This performs fetch + filter + new-job calculation, then prints the digest to stdout.
 It **does not** send Telegram and **does not** update `seen_jobs.json`.
+
+### Run all currently matched jobs, ignoring seen history
+
+```bash
+python main.py --ignore-seen
+```
+
+This sends all currently matched jobs regardless of whether they were seen before.
+It does **not** update `seen_jobs.json`.
 
 ## Configure matching rules
 
@@ -95,12 +115,27 @@ Matching is case-insensitive and uses simple substring checks.
 
 ## Add or remove companies
 
-Edit `companies.csv`:
+Edit `companies.csv` directly, or use Telegram commands (with `telegram-commands` workflow enabled).
+
+CSV format:
 
 ```csv
 company,ashby_url
 exampleco,https://jobs.ashbyhq.com/exampleco
 ```
+
+## Telegram bot commands
+
+When `.github/workflows/telegram-commands.yml` is enabled, send these commands from the authorized chat (`TELEGRAM_CHAT_ID`):
+
+- `/help` — show command usage.
+- `/list` — show tracked boards.
+- `/add https://jobs.ashbyhq.com/<slug>` — add board using slug as name.
+- `/add <name> https://jobs.ashbyhq.com/<slug>` — add board with custom name.
+- `/remove <slug-or-name>` — remove a tracked board.
+- `/runall` — dispatch `.github/workflows/run-now.yml` with `ignore_seen=true`.
+
+`/runall` requires `GH_WORKFLOW_TOKEN` secret in `telegram-commands` workflow.
 
 ## GitHub Actions schedule details
 
@@ -112,4 +147,4 @@ Then it gates execution by checking local London time and runs only when it's ex
 
 Manual runs bypass the 08:30 gate.
 
-After the run, if `seen_jobs.json` changed, the workflow commits and pushes it back to the branch.
+After the daily run, if `seen_jobs.json` changed, the workflow commits and pushes it back to the branch.

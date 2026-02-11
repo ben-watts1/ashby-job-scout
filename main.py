@@ -26,6 +26,11 @@ SEEN_PATH = BASE_DIR / "seen_jobs.json"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check Ashby boards and send Telegram digest.")
     parser.add_argument("--dry-run", action="store_true", help="Print digest only; do not send Telegram or save seen jobs.")
+    parser.add_argument(
+        "--ignore-seen",
+        action="store_true",
+        help="Send all currently matched jobs regardless of seen history; does not update seen_jobs.json.",
+    )
     return parser.parse_args()
 
 
@@ -43,6 +48,11 @@ def main() -> int:
         try:
             raw_jobs = [job_to_dict(job) for job in fetch_jobs(company=company, ashby_url=url)]
             matched_jobs = filter_jobs(raw_jobs, config)
+            if args.ignore_seen:
+                if matched_jobs:
+                    grouped_new_jobs[company] = matched_jobs
+                continue
+
             new_jobs, merged_seen = split_new_jobs(matched_jobs, next_seen_state.get(company, []))
             next_seen_state[company] = merged_seen
             if new_jobs:
@@ -65,7 +75,10 @@ def main() -> int:
         raise RuntimeError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables are required")
 
     send_message(bot_token=bot_token, chat_id=chat_id, text=digest)
-    save_seen(SEEN_PATH, next_seen_state)
+
+    if not args.ignore_seen:
+        save_seen(SEEN_PATH, next_seen_state)
+
     return 0
 
 
