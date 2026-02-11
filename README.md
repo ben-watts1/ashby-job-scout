@@ -5,7 +5,7 @@ A minimal Python job monitor that checks selected Ashby boards, filters by confi
 ## What this does
 
 - Reads company boards from `companies.csv`.
-- Fetches jobs from Ashby's public posting API (`https://api.ashbyhq.com/posting-api/job-board/{slug}`).
+- Fetches and parses Ashby jobs from `__NEXT_DATA__` JSON.
 - Normalizes each job to:
   - `company`
   - `job_id` (or URL fallback)
@@ -26,7 +26,7 @@ A minimal Python job monitor that checks selected Ashby boards, filters by confi
 - `companies.csv` — company list and Ashby URLs.
 - `config.yml` — include/exclude/location filters.
 - `main.py` — orchestration.
-- `connectors/ashby.py` — Ashby public API fetch + parse.
+- `connectors/ashby.py` — Ashby fetch + parse.
 - `matcher.py` — filtering logic.
 - `notify/telegram.py` — Telegram `sendMessage` integration.
 - `storage.py` — seen-state read/write and new-job detection.
@@ -109,7 +109,5 @@ GitHub cron uses UTC only. To keep **08:30 Europe/London** through DST changes, 
 - `08:30 UTC` weekdays
 
 Then it gates execution by checking local London time and runs only when it's exactly `08:30` in `Europe/London`.
-
-Manual runs bypass the 08:30 gate.
 
 After the run, if `seen_jobs.json` changed, the workflow commits and pushes it back to the branch.

@@ -1,14 +1,18 @@
-"""Ashby job board connector using Ashby's public posting API."""
+"""Ashby job board connector."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
-from urllib.parse import urlparse
+import json
+import re
+from typing import Any, Iterable
+from urllib.parse import urljoin
 
 import requests
 
-ASHBY_POSTING_API_BASE = "https://api.ashbyhq.com/posting-api/job-board"
+NEXT_DATA_PATTERN = re.compile(
+    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL
+)
 
 
 @dataclass(frozen=True)
@@ -22,100 +26,146 @@ class Job:
 
 
 class AshbyFetchError(RuntimeError):
-    """Raised when an Ashby board can't be fetched or parsed."""
+    """Raised when an Ashby board can't be parsed or fetched."""
 
 
 def fetch_jobs(company: str, ashby_url: str, timeout_seconds: int = 20) -> list[Job]:
-    """Fetch and normalize jobs from a single Ashby board via public API."""
-    slug = _extract_board_slug(ashby_url)
-    endpoint = f"{ASHBY_POSTING_API_BASE}/{slug}"
+    """Fetch and normalize jobs from a single Ashby board."""
+    response = requests.get(ashby_url, timeout=timeout_seconds)
+    response.raise_for_status()
 
-    response = requests.get(endpoint, timeout=timeout_seconds)
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as exc:
-        raise AshbyFetchError(f"API request failed ({response.status_code}): {response.text[:300]}") from exc
+    match = NEXT_DATA_PATTERN.search(response.text)
+    if not match:
+        raise AshbyFetchError("__NEXT_DATA__ JSON script was not found")
 
-    payload = response.json()
-    postings = payload.get("jobs")
-    if not isinstance(postings, list):
-        raise AshbyFetchError("API response did not include a valid 'jobs' list")
+    next_data = json.loads(match.group(1))
+    postings = _find_job_postings(next_data)
+    if not postings:
+        raise AshbyFetchError("No job postings were found in __NEXT_DATA__")
 
     jobs: list[Job] = []
     for posting in postings:
-        if not isinstance(posting, dict):
-            continue
-        job = _normalize_job(company=company, posting=posting)
+        job = _normalize_job(company=company, board_url=ashby_url, posting=posting)
         if job:
             jobs.append(job)
 
     if not jobs:
-        raise AshbyFetchError("API returned no parseable jobs")
+        raise AshbyFetchError("Job posting payload was found, but no valid jobs were parsed")
 
     return jobs
 
 
-def _extract_board_slug(ashby_url: str) -> str:
-    parsed = urlparse(ashby_url)
-    parts = [part for part in parsed.path.split("/") if part]
-    if not parts:
-        raise AshbyFetchError(f"Could not parse Ashby board slug from URL: {ashby_url}")
-    return parts[-1]
+def _find_job_postings(payload: Any) -> list[dict[str, Any]]:
+    candidates: list[list[dict[str, Any]]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for value in node.values():
+                walk(value)
+            return
+        if isinstance(node, list):
+            if node and all(isinstance(item, dict) for item in node):
+                score = sum(_looks_like_job(item) for item in node)
+                if score:
+                    candidates.append(node)
+            for value in node:
+                walk(value)
+
+    walk(payload)
+    if not candidates:
+        return []
+
+    return max(candidates, key=lambda items: sum(_looks_like_job(item) for item in items))
 
 
-def _normalize_job(company: str, posting: dict[str, Any]) -> Job | None:
-    title = str(posting.get("title") or "").strip()
-    if not title:
+def _looks_like_job(item: dict[str, Any]) -> bool:
+    keys = {key.lower() for key in item.keys()}
+    has_title = any("title" in key for key in keys)
+    has_link = any(word in key for key in keys for word in ("url", "link", "path"))
+    has_identifier = any(word in key for key in keys for word in ("id", "jobid", "postingid"))
+    return has_title and (has_link or has_identifier)
+
+
+def _normalize_job(company: str, board_url: str, posting: dict[str, Any]) -> Job | None:
+    title = _first_text(posting, ["title", "jobTitle", "name"]) or "Untitled role"
+    team = _first_text(posting, ["team", "department", "departmentName", "jobDepartment"]) or ""
+    location = _extract_location(posting)
+    raw_url = _first_text(
+        posting,
+        [
+            "jobUrl",
+            "absoluteUrl",
+            "applyUrl",
+            "url",
+            "jobPostingUrl",
+            "jobPath",
+            "path",
+        ],
+    )
+    url = urljoin(board_url.rstrip("/") + "/", raw_url) if raw_url else board_url
+
+    raw_id = _first_text(posting, ["id", "jobId", "jobPostingId", "slug"])
+    job_id = (raw_id or url).strip()
+    if not job_id:
         return None
-
-    job_url = str(posting.get("jobUrl") or "").strip()
-    apply_url = str(posting.get("applyUrl") or "").strip()
-    if not job_url:
-        return None
-
-    job_id = apply_url or job_url
-    location = _coerce_location(posting.get("location"))
-
-    team = str(posting.get("team") or "").strip()
-    if not team:
-        team = _coerce_department(posting.get("department"))
 
     return Job(
         company=company,
         job_id=job_id,
-        title=title,
-        team=team,
-        location=location,
-        url=job_url,
+        title=title.strip(),
+        team=team.strip(),
+        location=location.strip(),
+        url=url.strip(),
     )
 
 
-def _coerce_location(value: Any) -> str:
+def _extract_location(posting: dict[str, Any]) -> str:
+    direct = _first_text(posting, ["location", "locationName", "jobLocation", "city"])
+    if direct:
+        return direct
+
+    location_parts = _first_collection_text(posting, ["locations", "locationNames"])
+    if location_parts:
+        return ", ".join(location_parts)
+
+    return ""
+
+
+def _first_text(payload: dict[str, Any], keys: Iterable[str]) -> str:
+    lowered = {key.lower(): value for key, value in payload.items()}
+    for key in keys:
+        value = lowered.get(key.lower())
+        parsed = _coerce_text(value)
+        if parsed:
+            return parsed
+    return ""
+
+
+def _first_collection_text(payload: dict[str, Any], keys: Iterable[str]) -> list[str]:
+    lowered = {key.lower(): value for key, value in payload.items()}
+    for key in keys:
+        value = lowered.get(key.lower())
+        if isinstance(value, list):
+            items = [_coerce_text(item) for item in value]
+            clean = [item for item in items if item]
+            if clean:
+                return clean
+    return []
+
+
+def _coerce_text(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        return value.strip()
+        return value
+    if isinstance(value, (int, float)):
+        return str(value)
     if isinstance(value, dict):
-        for key in ("location", "name", "label", "value", "text"):
-            candidate = value.get(key)
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip()
-        return ""
-    return str(value).strip()
-
-
-def _coerce_department(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, dict):
-        for key in ("name", "label", "value", "text"):
-            candidate = value.get(key)
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip()
-        return ""
-    return str(value).strip()
+        for candidate in ("name", "label", "value", "text", "title"):
+            nested = value.get(candidate)
+            if isinstance(nested, str) and nested.strip():
+                return nested
+    return ""
 
 
 def job_to_dict(job: Job) -> dict[str, str]:
