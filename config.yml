@@ -1,3 +1,10 @@
 include: []
-exclude: []
+exclude: 
+  - GTM
+  - sales
+  - marketing
+  - finance
+  - ops
+  - operations
+  - account executive
 locations_include: []
